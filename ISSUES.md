@@ -12,6 +12,10 @@ This document outlines the actionable security, authentication, and architectura
 | **`ISSUE-FE-02`** | **MEDIUM** | `src/api/` & `integration/` | Standardize Next.js environment variable syntax (`process.env.NEXT_PUBLIC_*`). |
 | **`ISSUE-FE-03`** | **LOW** | `src/components/ui/Prism.jsx` | WebGL context disposal on unmount to prevent GPU resource leaks. |
 | **`ISSUE-FE-04`** | **LOW** | `src/features/exchange/ExchangePage.jsx` | Resolve Oxlint warnings & synchronous `setState` in effects. |
+| **`ISSUE-FE-05`** | **HIGH** | `next.config.mjs` | Implement comprehensive Content Security Policy (CSP) header. |
+| **`ISSUE-FE-06`** | **MEDIUM** | `next.config.mjs` | Implement anti-clickjacking (`X-Frame-Options`) & MIME protection (`X-Content-Type-Options`). |
+| **`ISSUE-FE-07`** | **MEDIUM** | `src/features/landing/components/LandingFooter.jsx` | Remediate internal dev route & system path disclosure (`/dev/tokens`). |
+| **`ISSUE-FE-08`** | **HIGH** | `next.config.mjs` / Vercel Edge | Enforce HTTP Strict Transport Security (HSTS) & restrict open document CORS. |
 
 ---
 
@@ -169,3 +173,165 @@ return () => {
 #### 3. Acceptance Criteria
 - [ ] `npx oxlint` reports zero errors and zero warnings.
 - [ ] No React Compiler de-optimizations triggered by cascading state effects.
+
+---
+
+### ISSUE-FE-05: Implement Comprehensive Content Security Policy (CSP) Header
+
+**Priority:** High (P1)  
+**Labels:** `security`, `frontend`, `nextjs`, `p1`  
+**Files:** `next.config.mjs`  
+**WSTG Reference:** `WSTG-CONF-12`, `OSHP-Content-Security-Policy`
+
+#### 1. What the Problem Is
+Wapiti detected that the `Content-Security-Policy` (CSP) header is not set for `https://kimana-frontend.vercel.app/`. Without a CSP header, the application lacks essential defense-in-depth against Cross-Site Scripting (XSS), data injection, unauthorized script execution, and client-side data exfiltration.
+
+#### 2. Step-by-Step Resolution Guide
+In `next.config.mjs`, declare strict CSP directives compatible with Next.js 16 (App Router), React 19, Tailwind CSS v4, and OGL WebGL rendering:
+
+```javascript
+const cspHeader = `
+  default-src 'self';
+  script-src 'self' 'unsafe-eval' 'unsafe-inline';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' blob: data: https:;
+  font-src 'self' data: https:;
+  connect-src 'self' https://* wss://*;
+  object-src 'none';
+  base-uri 'self';
+  form-action 'self';
+  frame-ancestors 'none';
+  upgrade-insecure-requests;
+`.replace(/\s{2,}/g, ' ').trim();
+
+const nextConfig = {
+  async headers() {
+    return [
+      {
+        source: '/(.*)',
+        headers: [
+          {
+            key: 'Content-Security-Policy',
+            value: cspHeader,
+          },
+        ],
+      },
+    ];
+  },
+};
+
+export default nextConfig;
+```
+
+#### 3. Acceptance Criteria
+- [ ] `Content-Security-Policy` header is returned on all responses.
+- [ ] Zero CSP violation errors in browser console during full application flow.
+- [ ] OGL WebGL animation in `Prism.jsx` functions properly without resource blocking.
+
+---
+
+### ISSUE-FE-06: Implement Anti-Clickjacking & MIME-Sniffing Defense Headers
+
+**Priority:** Medium (P2)  
+**Labels:** `security`, `frontend`, `nextjs`, `p2`  
+**Files:** `next.config.mjs`  
+**WSTG Reference:** `OSHP-X-Frame-Options`, `OSHP-X-Content-Type-Options`, `CWE-1021`, `CWE-79`
+
+#### 1. What the Problem Is
+Wapiti identified that neither `X-Frame-Options` nor `X-Content-Type-Options` are configured on `https://kimana-frontend.vercel.app/`:
+- **Clickjacking:** Without `X-Frame-Options: DENY`, attackers can embed the application inside an iframe to perform UI redressing attacks.
+- **MIME Sniffing:** Without `X-Content-Type-Options: nosniff`, browsers may execute malicious scripts uploaded as images or text files.
+
+#### 2. Step-by-Step Resolution Guide
+In `next.config.mjs`, add the baseline HTTP defense headers:
+
+```javascript
+const securityHeaders = [
+  { key: 'X-Frame-Options', value: 'DENY' },
+  { key: 'X-Content-Type-Options', value: 'nosniff' },
+  { key: 'Referrer-Policy', value: 'strict-origin-when-cross-origin' },
+  { key: 'Permissions-Policy', value: 'camera=(), microphone=(), geolocation=(), browsing-topics=()' },
+  { key: 'X-XSS-Protection', value: '0' },
+];
+```
+
+#### 3. Acceptance Criteria
+- [ ] `curl -I https://kimana-frontend.vercel.app/` returns `X-Frame-Options: DENY`.
+- [ ] `curl -I https://kimana-frontend.vercel.app/` returns `X-Content-Type-Options: nosniff`.
+- [ ] Embedding site inside an external iframe fails with frame denial error.
+
+---
+
+### ISSUE-FE-07: Remediate Internal Route & System Path Disclosure (`/dev/tokens`)
+
+**Priority:** Medium (P2)  
+**Labels:** `security`, `frontend`, `nextjs`, `p2`  
+**Files:** `src/features/landing/components/LandingFooter.jsx:78`, `app/dev/tokens/page.js`, `src/middleware.js`  
+**WSTG Reference:** `WSTG-ERRH-01`, `CWE-200`, `CWE-209`, `WASC-13`
+
+#### 1. What the Problem Is
+Wapiti flagged `/dev/tokens` under Full Path Disclosure (`Response contains potential system path: /dev/tokens`).
+1. `src/features/landing/components/LandingFooter.jsx` line 78 exposes an active link `<Link href="/dev/tokens">Design Tokens</Link>`.
+2. `app/dev/tokens/page.js` is an internal preview page deployed publicly to production on Vercel.
+3. Automated scanners flag `/dev/*` as potential Unix filesystem disclosure.
+
+#### 2. Step-by-Step Resolution Guide
+1. In `LandingFooter.jsx`, remove the `/dev/tokens` link in production:
+   ```jsx
+   {process.env.NODE_ENV !== 'production' && (
+     <li>
+       <Link href="/dev/tokens" className="hover:opacity-100 transition-opacity">Design Tokens (Dev)</Link>
+     </li>
+   )}
+   ```
+2. In `src/middleware.js`, block public access to `/dev/*` in production:
+   ```javascript
+   import { NextResponse } from 'next/server';
+
+   export function middleware(request) {
+     const { pathname } = request.nextUrl;
+     if (pathname.startsWith('/dev') && process.env.NODE_ENV === 'production') {
+       return new NextResponse(null, { status: 404 });
+     }
+     return NextResponse.next();
+   }
+
+   export const config = {
+     matcher: ['/dev/:path*'],
+   };
+   ```
+
+#### 3. Acceptance Criteria
+- [ ] Requesting `/dev/tokens` in production returns a 404 status.
+- [ ] Footer contains no `/dev/*` links in production builds.
+- [ ] Wapiti scan yields 0 findings under Information Disclosure.
+
+---
+
+### ISSUE-FE-08: Enforce Strict Transport Security (HSTS) & Restrict Open Document CORS
+
+**Priority:** High (P1)  
+**Labels:** `security`, `devops`, `infra`, `p1`  
+**Files:** `next.config.mjs`, `vercel.json`  
+**WSTG Reference:** `WSTG-CRYP-01`, `CWE-319`
+
+#### 1. What the Problem Is
+- Wapiti flagged that `Strict Transport Security (HSTS)` is missing across scanned endpoints.
+- Live probing reveals `access-control-allow-origin: *` returned on root HTML document requests, permitting arbitrary cross-origin requests.
+
+#### 2. Step-by-Step Resolution Guide
+1. In `next.config.mjs`, configure max-age HSTS:
+   ```javascript
+   {
+     key: 'Strict-Transport-Security',
+     value: 'max-age=63072000; includeSubDomains; preload',
+   }
+   ```
+2. Remove wildcard `Access-Control-Allow-Origin: *` from document routes in `vercel.json` or project settings. Limit CORS strictly to public API routes.
+3. Prepare the domain for HSTS Preload submission at `https://hstspreload.org/`.
+
+#### 3. Acceptance Criteria
+- [ ] All HTTPS responses include `Strict-Transport-Security: max-age=63072000; includeSubDomains; preload`.
+- [ ] Document HTML responses do NOT include wildcard CORS headers.
+- [ ] HTTP port 80 requests redirect cleanly to HTTPS.
+

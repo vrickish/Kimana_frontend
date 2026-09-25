@@ -74,9 +74,11 @@ export function LandingFooter() {
                 <li>
                   <a href="#why-kimana" className="hover:opacity-100 transition-opacity">Why Kimana</a>
                 </li>
-                <li>
-                  <Link href="/dev/tokens" className="hover:opacity-100 transition-opacity">Design Tokens</Link>
-                </li>
+                {process.env.NODE_ENV !== 'production' && (
+                  <li>
+                    <Link href="/dev/tokens" className="hover:opacity-100 transition-opacity">Design Tokens (Dev)</Link>
+                  </li>
+                )}
                 <li>
                   <Link href="/dashboard" className="hover:opacity-100 transition-opacity">Customer Portal</Link>
                 </li>
